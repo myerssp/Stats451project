@@ -76,7 +76,7 @@ hist(estimate - win_perc)
 #does a mixed-effects linear model to see how the AdjOE and AdjDE differ between tiers 
 fitH <- stan_lmer(win_perc ~ AdjOE+AdjDE
                   + (1 + AdjOE+AdjDE | tiers),
-                  data = df, iter = 10000, chains = 1)
+                  data = df, iter = 10000, chains = 4)
 posteriorH <- as.matrix(fitH)
 
 #save the values for each conference
@@ -185,3 +185,7 @@ ggplot(data = a_df2,
   scale_y_continuous(expression(paste("Varying AdjDE"))) + 
   theme_bw( base_family = "serif")
 
+#creates the trace plot for the unpooled model
+mcmc_trace(posteriorH, pars = c("b[AdjOE tiers:1]", "b[AdjDE tiers:1]", 
+                                "b[AdjOE tiers:2]","b[AdjDE tiers:2]","b[AdjOE tiers:3]",
+                                "b[AdjDE tiers:3]","b[AdjOE tiers:4]","b[AdjDE tiers:4]"))
