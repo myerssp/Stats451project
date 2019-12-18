@@ -1,77 +1,187 @@
-library(ggplot2)
-library(rstan)
 library(bayesplot)
 library(rstanarm)
+library(leaps)
+library(MASS)
+library(ggplot2)
+library(dplyr)
+library(mlmRev)
+library(lme4)
 
 setwd("C:/Users/micha/Documents/Stats_451/finalProject")
-data <- read.csv("summary19_pt.csv")
+data <- read.csv("summary19_pt_all.csv")
 attach(data)
 
-hist(win_perc)
+#uses the data as a data frame and creates power6
+df <- as.data.frame(data)
+df <- mutate(df, power6 = ifelse(Conference == "SEC" | Conference == "Big 10" | Conference == "Big 12" | 
+                                   Conference == "Big East" | Conference == "ACC" | 
+                                   Conference == "Pac 12", 1, 0))
+df <- mutate(df, tiers = ifelse(Conference == "SEC" | Conference == "Big 10" | Conference == "Big 12" | 
+                                  Conference == "Big East" | Conference == "ACC" | 
+                                  Conference == "Pac 12", 1, 
+                                ifelse(Conference == "A-10" | Conference == "AAC" | Conference == "WCC"|
+                                       Conference == "MWC", 2, 
+                                       ifelse(Conference == "Am. East" | Conference == "A-Sun" | 
+                                                Conference == "Big West"|Conference == "CAA"|
+                                                Conference == "C-USA"|Conference == "Ivy"|Conference == "MAC"|
+                                                Conference == "MVC"|Conference == "OVC"|Conference == "Southern"|
+                                                Conference == "Sunbelt", 3, 4))))
 
-hist(games)
+#creates the first histogram
+ggplot(df, aes(x = win_perc)) + geom_histogram(aes(y = ..density..), binwidth = 0.1, 
+                                               color= "black", fill = "white") + 
+  ylab("Density") + xlab("Win Percentage") +
+  stat_function(fun = dnorm, args = list(mean = mean(df$win_perc), sd = sd(df$win_perc)))
 
-hist(AdjOE)
-hist(AdjDE)
-hist(AdjEM)
-hist(AdjTempo)
+#chooses the 19 variables to test
+data_selection <- data[,c(32, 5,9,13, 21, 23, 25, 27, 44,47, 61:69)]
 
-stan_code <- "data{
-    int<lower=0> n;
-    int<lower=0> f;
-    matrix[n, f] x;
-    real y[n];
-}parameters{
-    vector[f] beta;
-    real<lower=0> sigma;
-}transformed parameters{
-    vector<lower = 0>[n] pred;
-    pred = x*beta;
-}model{
-    beta[1] ~ normal(0, 1e6);
-    beta[2] ~ normal(0, 1e6);
-    beta[3] ~ normal(0, 1e6);
-    beta[4] ~ normal(0, 1e6);
-    beta[5] ~ normal(0, 1e6);
-    for(i in 1:n){
-        y[i] ~ beta(pred[i]*(pred[i]*((1-pred[i])/sigma-1)),(1-pred[i])*(pred[i]*((1-pred[i])/sigma-1)) );
-    }
-}"
+#saves the data in an easy-to-understand format
+y <- data_selection$win_perc
+X <- data_selection[,-1]
 
-data_stan <- data[, c(5, 9, 13, 15, 18, 19, 20, 21, 22)]
-head(data_stan)
+#tests for best subset
+leap.output <- regsubsets(X,y,method="exhaustive",nbest=1,nvmax=19)
+plot(leap.output,scale="adjr2",col="blue")
 
-datalist <- list(n = nrow(data), f = 5, x = data_stan[,c(1:4, 9)], y = data_stan[,8])
+#does the stan fit with the best subset
+fit <- stan_glm(win_perc ~ AdjOE+AdjDE+oeFGPct+oTOPct+ORPct+FTRate+deFGPct+dTOPct, data = data, iter = 10000)
+posterior <- as.matrix(fit)
 
-stan_fit <- stan(model_code = stan_code, data = datalist, chains = 1, iter = 1000)
-
-stan_samples <- extract(stan_fit, permuted = "TRUE")
-
-pred_wins = matrix(nrow = nrow(stan_samples$pred), ncol = ncol(stan_samples$pred))
-
-for(i in 1:nrow(stan_samples$pred)){
-  for(j in 1:ncol(stan_samples$pred)){
-    pred_wins[i,j] = rbeta(1, stan_samples$pred[i,j]*stan_samples$sigma[i],
-                           (1-stan_samples$pred[i,j])*stan_samples$sigma[i])
-  }
-}
-
-data_pred = data.frame(wins = colMeans(pred_wins))
-
-hist(data_pred$wins)
-
-stan_samples$pred
-
-stan_samples$pred[1]
-stan_samples$win_perc[1]
-
-resid <- data$win_perc - colMeans(pred_wins)
-
-posterior = as.matrix(stan_fit)
-  
-hist(resid)
+#gets the plot of the coefficients
+plot_title <- ggtitle("Posterior distributions",
+                      "with medians and 95% intervals")
 mcmc_areas(posterior,
-           pars = c("beta[1]", "beta[2]", "beta[3]", "beta[4]", "beta[5]"),
-           prob = 0.95)
-ppc_dens_overlay(y = stan_samples$pred[,1],
-                 yrep = posterior_predict(stan_samples, draws = 50))
+           pars = c("AdjDE", "AdjOE", "oeFGPct", "ORPct","FTRate","deFGPct", "oTOPct", "dTOPct"),
+           prob = 0.95) + plot_title
+#gets the trace plot
+test1 <- as.array(fit)
+mcmc_trace(test1, pars = c("AdjDE", "AdjOE", "oeFGPct", "ORPct","FTRate","deFGPct", "oTOPct", "dTOPct"), 
+           np = nuts_params(fit))
+
+#getting data ready for predicted values
+avg_beta <- colMeans(posterior[,-10])
+data_x <-data[,c(18,9,13, 21, 23, 25, 27, 67, 68)]
+estimate <- as.matrix(data_x) %*% as.matrix(avg_beta)
+
+#plots the predicted and actual
+p1 <- hist(estimate)
+p2 <- hist(data$win_perc)
+plot( p1, col=rgb(0,0,1,1/4), xlim=c(0,1))  # first histogram
+plot( p2, col=rgb(1,0,0,1/4), xlim=c(0,1), add=T)  # second
+
+#residuals
+hist(estimate - win_perc)
+
+#does a mixed-effects linear model to see how the AdjOE and AdjDE differ between tiers 
+fitH <- stan_lmer(win_perc ~ AdjOE+AdjDE
+                  + (1 + AdjOE+AdjDE | tiers),
+                  data = df, iter = 10000, chains = 1)
+posteriorH <- as.matrix(fitH)
+
+#save the values for each conference
+mu_gen <- as.matrix(fitH, 
+                       pars = "AdjOE")
+u_conf <- posteriorH[,c(5,8,11,14)]
+a_conf <- as.numeric(mu_gen)+u_conf
+
+#save the standard deviations
+s_gen <- as.matrix(fitH, 
+                      pars = "sigma")
+s_conf <- as.matrix(fitH, 
+                           pars = "Sigma[tiers:AdjOE,AdjOE]")
+
+#creates the mean and sd for each tier
+a_mean <- apply(X = a_conf,     # posterior mean
+                MARGIN = 2,
+                FUN = mean)
+a_sd <- apply(X = a_conf,       # posterior SD
+              MARGIN = 2,
+              FUN = sd)
+
+# Posterior median and 95% credible interval
+a_quant <- apply(X = a_conf, 
+                 MARGIN = 2, 
+                 FUN = quantile, 
+                 probs = c(0.025, 0.50, 0.975))
+a_quant <- data.frame(t(a_quant))
+names(a_quant) <- c("Q2.5", "Q50", "Q97.5")
+
+# Combine summary statistics of posterior simulation draws
+a_df <- data.frame(a_mean, a_sd, a_quant)
+round(head(a_df), 2)
+
+a_df <- a_df[order(a_df$a_mean), ]
+a_df$a_rank <- c(1 : dim(a_df)[1])  # a vector of school rank 
+
+# Plot school-level alphas's posterior mean and 95% credible interval
+ggplot(data = a_df, 
+       aes(x = a_rank, 
+           y = a_mean)) +
+  geom_pointrange(aes(ymin = Q2.5, 
+                      ymax = Q97.5),
+                  position = position_jitter(width = 0.1, 
+                                             height = 0)) + 
+  geom_hline(yintercept = mean(a_df$a_mean), 
+             size = 0.5, 
+             col = "red") + 
+  scale_x_continuous("Rank", 
+                     breaks = seq(from = 0, 
+                                  to = 4, 
+                                  by = 1)) + 
+  scale_y_continuous(expression(paste("Varying AdjOE"))) + 
+  theme_bw( base_family = "serif")
+
+
+#same as above but for DE
+mu_gen2 <- as.matrix(fitH, 
+                    pars = "AdjDE")
+u_conf2 <- posteriorH[,c(6,9,12,15)]
+a_conf2 <- as.numeric(mu_gen2)+u_conf2
+
+s_gen2 <- as.matrix(fitH, 
+                   pars = "sigma")
+
+s_conf2 <- as.matrix(fitH, 
+                    pars = "Sigma[tiers:AdjDE,AdjDE]")
+
+a_mean2 <- apply(X = a_conf2,     # posterior mean
+                MARGIN = 2,
+                FUN = mean)
+a_sd2 <- apply(X = a_conf2,       # posterior SD
+              MARGIN = 2,
+              FUN = sd)
+
+# Posterior median and 95% credible interval
+a_quant2 <- apply(X = a_conf2, 
+                 MARGIN = 2, 
+                 FUN = quantile, 
+                 probs = c(0.025, 0.50, 0.975))
+a_quant2 <- data.frame(t(a_quant2))
+names(a_quant2) <- c("Q2.5", "Q50", "Q97.5")
+
+# Combine summary statistics of posterior simulation draws
+a_df2 <- data.frame(a_mean2, a_sd2, a_quant2)
+round(head(a_df2), 2)
+
+a_df2 <- a_df2[order(a_df2$a_mean), ]
+a_df2$a_rank <- c(1 : dim(a_df2)[1])  # a vector of school rank 
+
+# Plot school-level alphas's posterior mean and 95% credible interval
+ggplot(data = a_df2, 
+       aes(x = a_rank, 
+           y = a_mean2)) +
+  geom_pointrange(aes(ymin = Q2.5, 
+                      ymax = Q97.5),
+                  position = position_jitter(width = 0.1, 
+                                             height = 0)) + 
+  geom_hline(yintercept = mean(a_df2$a_mean2), 
+             size = 0.5, 
+             col = "red") + 
+  scale_x_continuous("Rank", 
+                     breaks = seq(from = 0, 
+                                  to = 4, 
+                                  by = 1)) + 
+  scale_y_continuous(expression(paste("Varying AdjDE"))) + 
+  theme_bw( base_family = "serif")
+
